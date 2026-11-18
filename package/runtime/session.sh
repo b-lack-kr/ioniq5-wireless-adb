@@ -7,6 +7,8 @@ STATE=/data/nemesis/blackr-wireless-adb-session
 LIVE=/dev/blackr-wireless-adb-live-$$
 [ "$2" = "$STATE" ] && [ -d "$STATE" ] && [ ! -L "$STATE" ] && cd "$STATE" || exit 2
 PROVIDER=/data/nemesis/apps/blackr.wireless.adb/runtime/provider.jar
+POLICY=/data/nemesis/apps/blackr.wireless.adb/runtime/ap-policy.sh
+[ -f "$POLICY" ] && [ ! -L "$POLICY" ] && . "$POLICY" || exit 2
 BINARY=$STATE/neev-adbd
 CHILD=0
 PID=
@@ -212,7 +214,7 @@ else
     echo WAIT > ap-mode
 fi
 until select_ap; do
-    if [ -z "$AP_PID" ] && [ ! -e /data/hmgapi/mods/neev-usb-carplay ] && [ ! -L /data/hmgapi/mods/neev-usb-carplay ]; then
+    if [ -z "$AP_PID" ] && ! carplay_claims_radio; then
         # Never take over an interface that already has an IPv4 address.
         busy=0
         for net in /sys/class/net/rtwlan*; do

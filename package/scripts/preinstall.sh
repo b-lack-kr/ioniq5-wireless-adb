@@ -8,7 +8,7 @@ umask 077
 case "$(id)" in 'uid=0('*|'uid=0 '*|'uid=0') ;; *) exit 1;; esac
 [ -s runtime/provider.jar ] || exit 1
 chmod 755 runtime/neev-adbd || exit 1
-for f in runtime/session.sh runtime/daemon.sh runtime/monitor.sh runtime/mac.pub runtime/adb-control.jar runtime/wifi-export.jar runtime/wifi-reader.jar app/adb-control.apk installation.id; do
+for f in runtime/session.sh runtime/ap-policy.sh runtime/daemon.sh runtime/monitor.sh runtime/mac.pub runtime/adb-control.jar runtime/wifi-export.jar runtime/wifi-reader.jar app/adb-control.apk installation.id; do
     [ -s "$f" ] && [ ! -L "$f" ] || exit 1
 done
 # Retire only the previous ADB session; installation never starts a new one.

@@ -25,6 +25,7 @@ echo 'AP_STARTUP version=1.0.3 phase=ENTRY'
 startup_fail() { echo "AP_STARTUP_FAILURE reason=$1"; exit 3; }
 [ -f "$APP_DIR/runtime.sh" ] && [ ! -L "$APP_DIR/runtime.sh" ] || startup_fail RUNTIME_MISSING
 . "$APP_DIR/runtime.sh" || startup_fail RUNTIME_SOURCE
+[ -f "$APP_DIR/../ap-policy.sh" ] && [ ! -L "$APP_DIR/../ap-policy.sh" ] && . "$APP_DIR/../ap-policy.sh" || startup_fail POLICY_MISSING
 
 prepare_paths() {
     local item
@@ -232,7 +233,7 @@ stop_radio() {
         iptables -D OUTPUT -o "$ACTIVE_IFACE" -j "$CHAIN" >/dev/null 2>&1
         # A newly installed CarPlay service may be taking ownership; do not
         # remove an address, route or link that it could already be using.
-        if [ ! -e /data/hmgapi/mods/neev-usb-carplay ] && [ ! -L /data/hmgapi/mods/neev-usb-carplay ] && ap_active_identity; then
+        if ! carplay_claims_radio && ap_active_identity; then
             for table in $ADDED_ROUTES; do
                 ip route del "$NET" dev "$ACTIVE_IFACE" table "$table" >/dev/null 2>&1
             done
@@ -303,7 +304,7 @@ run_radio() {
 
 case "$ADB_OWNER_PID:$ADB_OWNER_BORN" in *[!0-9:]*|:*) startup_fail INVALID_OWNER;; esac
 [ -n "$ADB_OWNER_PID" ] && [ -n "$ADB_OWNER_BORN" ] || startup_fail INVALID_OWNER
-[ ! -e /data/hmgapi/mods/neev-usb-carplay ] && [ ! -L /data/hmgapi/mods/neev-usb-carplay ] || startup_fail CARPLAY_PRESENT
+! carplay_claims_radio || startup_fail CARPLAY_ACTIVE
 [ "$(getprop ro.build.product)" = NEEV.KOR.0000.V039.001.260902 ] &&
     [ "$(getprop ro.board.platform)" = tcc803x ] && [ "$(cat /proc/sys/kernel/osrelease)" = 3.18.24-tcc ] || startup_fail TARGET_MISMATCH
 [ ! -e "$BASE/use-existing-ap" ] && [ ! -L "$BASE/use-existing-ap" ] || startup_fail EXISTING_AP_CONFLICT
@@ -344,7 +345,7 @@ while :; do
     IFS= read -r owner_stat < "/proc/$ADB_OWNER_PID/stat" 2>/dev/null || owner_stat=
     owner_stat=${owner_stat##*) }
     set -- $owner_stat
-    if [ "$#" -lt 20 ] || [ "${20}" != "$ADB_OWNER_BORN" ] || [ -e /data/hmgapi/mods/neev-usb-carplay ] || [ -L /data/hmgapi/mods/neev-usb-carplay ]; then
+    if [ "$#" -lt 20 ] || [ "${20}" != "$ADB_OWNER_BORN" ] || carplay_claims_radio; then
         ap_phase OWNER_OR_CARPLAY_CHANGED
         break
     fi

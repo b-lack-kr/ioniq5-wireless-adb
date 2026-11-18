@@ -2,7 +2,7 @@
 version=1.1
 id=blackr.wireless.adb
 name=무선 ADB
-package-version=1.0.1
+package-version=1.0.2
 type=application
 short-desc=Wireless ADB control and connection monitor. by blackr.
 detailed-desc=Start or stop wireless ADB and view connection status, traffic and logs using an existing hotspot or a standalone USB Wi-Fi hotspot. by blackr.
