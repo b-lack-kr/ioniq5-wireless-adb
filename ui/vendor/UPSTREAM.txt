@@ -1,0 +1,6 @@
+Project: QR Code generator library (Nayuki)
+Source: https://github.com/nayuki/QR-Code-generator/archive/refs/tags/v1.8.0.zip
+Version: 1.8.0
+Archive SHA256: e02d65ba8f41f0622ac70adab5064513bfc5e31dbd22b4d4e81ee116d1ae33f9
+Java sources preserved unchanged; MIT license headers included.
+Only four core Java files are bundled; advanced Kanji segmentation and package documentation omitted.

@@ -1,0 +1,1 @@
+package kr.ioniq5.usbcp; public final class Provider { public static final String PRODUCT="NEEV.KOR.0000.V039.001.260902"; public static String property(String key) { try { return (String)Class.forName("android.os.SystemProperties").getMethod("get",String.class).invoke(null,key); } catch (Exception e) { return ""; } } }

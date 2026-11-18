@@ -1,0 +1,18 @@
+[nemesis]
+version=1.1
+id=blackr.wireless.adb
+name=무선 ADB
+package-version=1.0.1
+type=application
+short-desc=Wireless ADB control and connection monitor. by blackr.
+detailed-desc=Start or stop wireless ADB and view connection status, traffic and logs using an existing hotspot or a standalone USB Wi-Fi hotspot. by blackr.
+os=NEEV.KOR.0000.V039.001.260902
+models=any
+preinstall=scripts/preinstall.sh
+postinstall=scripts/postinstall.sh
+preuninstall=scripts/preuninstall.sh
+
+[app.0]
+kind=sh
+path=bin/launch.sh
+uid=root

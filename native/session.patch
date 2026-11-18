@@ -1,0 +1,356 @@
+--- a/adb/adb.c
++++ b/adb/adb.c
+@@ -16,6 +16,8 @@
+ 
+ #define  TRACE_TAG   TRACE_ADB
+ 
++#include "session.h"
++#include "events.h"
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <ctype.h>
+@@ -333,6 +335,7 @@
+     apacket *p;
+     int ret;
+ 
++    t->auth_challenged = 0;
+     ret = adb_auth_generate_token(t->token, sizeof(t->token));
+     if (ret != sizeof(t->token)) {
+         D("Error generating token ret=%d\n", ret);
+@@ -340,6 +343,7 @@
+     }
+ 
+     p = get_apacket();
++    t->auth_challenged = 1;
+     memcpy(p->data, t->token, ret);
+     p->msg.command = A_AUTH;
+     p->msg.arg0 = ADB_AUTH_TOKEN;
+@@ -388,6 +392,7 @@
+ void adb_auth_verified(atransport *t)
+ {
+     handle_online(t);
++    neev_client_authenticated(t);
+     send_connect(t);
+ }
+ 
+@@ -527,37 +532,21 @@
+             handle_offline(t);
+         }
+ 
+-        parse_banner((char*) p->data, t);
+-
+-        if (HOST || !auth_enabled) {
+-            handle_online(t);
+-            if(!HOST) send_connect(t);
+-        } else {
+-            send_auth_request(t);
+-        }
++        t->connection_state = CS_HOST;
++        send_auth_request(t);
+         break;
+ 
+     case A_AUTH:
+-        if (p->msg.arg0 == ADB_AUTH_TOKEN) {
+-            t->connection_state = CS_UNAUTHORIZED;
+-            t->key = adb_auth_nextkey(t->key);
+-            if (t->key) {
+-                send_auth_response(p->data, p->msg.data_length, t);
+-            } else {
+-                /* No more private keys to try, send the public key */
+-                send_auth_publickey(t);
+-            }
+-        } else if (p->msg.arg0 == ADB_AUTH_SIGNATURE) {
++        /* A remote may reply only to a challenge issued on this connection.
++         * The PINNED USB key is the entire allowlist. Never enroll network keys. */
++        if (p->msg.arg0 == ADB_AUTH_SIGNATURE && t->auth_challenged) {
++            t->auth_challenged = 0;
+             if (adb_auth_verify(t->token, p->data, p->msg.data_length)) {
+                 adb_auth_verified(t);
+-                t->failed_auth_attempts = 0;
+             } else {
+-                if (t->failed_auth_attempts++ > 10)
+-                    adb_sleep_ms(1000);
++                neev_monitor_auth_rejected();
+                 send_auth_request(t);
+             }
+-        } else if (p->msg.arg0 == ADB_AUTH_RSAPUBLICKEY) {
+-            adb_auth_confirm_key(p->data, p->msg.data_length, t);
+         }
+         break;
+ 
+@@ -1254,7 +1243,7 @@
+     int port;
+     char value[PROPERTY_VALUE_MAX];
+ 
+-    umask(000);
++    umask(077);
+ #endif
+ 
+     atexit(adb_cleanup);
+@@ -1284,11 +1273,6 @@
+         exit(1);
+     }
+ #else
+-    property_get("ro.adb.secure", value, "0");
+-    auth_enabled = !strcmp(value, "1");
+-    if (auth_enabled)
+-        adb_auth_init();
+-
+     // Our external storage path may be different than apps, since
+     // we aren't able to bind mount after dropping root.
+     const char* adb_external_storage = getenv("ADB_EXTERNAL_STORAGE");
+@@ -1339,32 +1323,7 @@
+         }
+     }
+ 
+-    int usb = 0;
+-    if (access(USB_ADB_PATH, F_OK) == 0 || access(USB_FFS_ADB_EP0, F_OK) == 0) {
+-        // listen on USB
+-        usb_init();
+-        usb = 1;
+-    }
+-
+-    // If one of these properties is set, also listen on that port
+-    // If one of the properties isn't set and we couldn't listen on usb,
+-    // listen on the default port.
+-    property_get("service.adb.tcp.port", value, "");
+-    if (!value[0]) {
+-        property_get("persist.adb.tcp.port", value, "");
+-    }
+-    if (sscanf(value, "%d", &port) == 1 && port > 0) {
+-        printf("using port=%d\n", port);
+-        // listen on TCP port specified by service.adb.tcp.port property
+-        local_init(port);
+-    } else if (!usb) {
+-        // listen on default port
+-        local_init(DEFAULT_ADB_LOCAL_TRANSPORT_PORT);
+-    }
+-
+-    D("adb_main(): pre init_jdwp()\n");
+-    init_jdwp();
+-    D("adb_main(): post init_jdwp()\n");
++    neev_accept_clients();
+ #endif
+ 
+     if (is_daemon)
+@@ -1631,16 +1590,11 @@
+     D("Handling commandline()\n");
+     return adb_commandline(argc - 1, argv + 1);
+ #else
+-    /* If adbd runs inside the emulator this will enable adb tracing via
+-     * adb-debug qemud service in the emulator. */
+-    adb_qemu_trace_init();
+-    if((argc > 1) && (!strcmp(argv[1],"recovery"))) {
+-        adb_device_banner = "recovery";
+-        recovery_mode = 1;
+-    }
+-
+-    start_device_log();
+-    D("Handling main()\n");
++    if (argc != 3) {
++        fprintf(stderr, "Usage: neev-adbd <dongle-interface> <ADB-public-key-file>\n");
++        return 1;
++    }
++    neev_prepare(argv[1], argv[2]);
+     return adb_main(0, DEFAULT_ADB_PORT);
+ #endif
+ }
+--- a/adb/adb.h
++++ b/adb/adb.h
+@@ -92,6 +92,10 @@
+         */
+     int    exit_on_close;
+ 
++    /* Fixed metadata only; preserve the channel ID after remove_socket(). */
++    unsigned neev_service_kind;
++    unsigned neev_service_id;
++
+         /* the asocket we are connected to
+         */
+ 
+@@ -202,6 +206,7 @@
+ 
+     void *key;
+     unsigned char token[TOKEN_SIZE];
++    int auth_challenged;
+     fdevent auth_fde;
+     unsigned failed_auth_attempts;
+ };
+--- a/adb/services.c
++++ b/adb/services.c
+@@ -16,6 +16,7 @@
+ 
+ #include <stddef.h>
+ #include <stdlib.h>
++#include <sys/prctl.h>
+ #include <stdio.h>
+ #include <unistd.h>
+ #include <string.h>
+@@ -197,6 +198,7 @@
+         return -1;
+     }
+ 
++    pid_t daemon_pid = getpid();
+     *pid = fork();
+     if(*pid < 0) {
+         printf("- fork failed: %s -\n", strerror(errno));
+@@ -207,6 +209,9 @@
+     if(*pid == 0){
+         int pts;
+ 
++        /* A direct shell dies when its daemon thread/process goes away. */
++        if (prctl(PR_SET_PDEATHSIG, SIGKILL, 0, 0, 0) || getppid() != daemon_pid)
++            _exit(1);
+         setsid();
+ 
+         pts = unix_open(devname, O_RDWR);
+@@ -320,74 +325,10 @@
+ {
+     int ret = -1;
+ 
+-    if(!strncmp(name, "tcp:", 4)) {
+-        int port = atoi(name + 4);
+-        name = strchr(name + 4, ':');
+-        if(name == 0) {
+-            ret = socket_loopback_client(port, SOCK_STREAM);
+-            if (ret >= 0)
+-                disable_tcp_nagle(ret);
+-        } else {
+-#if ADB_HOST
+-            ret = socket_network_client(name + 1, port, SOCK_STREAM);
+-#else
+-            return -1;
+-#endif
+-        }
+-#ifndef HAVE_WINSOCK   /* winsock doesn't implement unix domain sockets */
+-    } else if(!strncmp(name, "local:", 6)) {
+-        ret = socket_local_client(name + 6,
+-                ANDROID_SOCKET_NAMESPACE_RESERVED, SOCK_STREAM);
+-    } else if(!strncmp(name, "localreserved:", 14)) {
+-        ret = socket_local_client(name + 14,
+-                ANDROID_SOCKET_NAMESPACE_RESERVED, SOCK_STREAM);
+-    } else if(!strncmp(name, "localabstract:", 14)) {
+-        ret = socket_local_client(name + 14,
+-                ANDROID_SOCKET_NAMESPACE_ABSTRACT, SOCK_STREAM);
+-    } else if(!strncmp(name, "localfilesystem:", 16)) {
+-        ret = socket_local_client(name + 16,
+-                ANDROID_SOCKET_NAMESPACE_FILESYSTEM, SOCK_STREAM);
+-#endif
+-#if !ADB_HOST
+-    } else if(!strncmp("dev:", name, 4)) {
+-        ret = unix_open(name + 4, O_RDWR);
+-    } else if(!strncmp(name, "framebuffer:", 12)) {
+-        ret = create_service_thread(framebuffer_service, 0);
+-    } else if (!strncmp(name, "jdwp:", 5)) {
+-        ret = create_jdwp_connection_fd(atoi(name+5));
+-    } else if (!strncmp(name, "log:", 4)) {
+-        ret = create_service_thread(log_service, get_log_file_path(name + 4));
+-    } else if(!HOST && !strncmp(name, "shell:", 6)) {
+-        if(name[6]) {
+-            ret = create_subproc_thread(name + 6);
+-        } else {
+-            ret = create_subproc_thread(0);
+-        }
+-    } else if(!strncmp(name, "sync:", 5)) {
++    if (!strncmp(name, "shell:", 6)) {
++        ret = create_subproc_thread(name[6] ? name + 6 : NULL);
++    } else if (!strcmp(name, "sync:")) {
+         ret = create_service_thread(file_sync_service, NULL);
+-    } else if(!strncmp(name, "remount:", 8)) {
+-        ret = create_service_thread(remount_service, NULL);
+-    } else if(!strncmp(name, "reboot:", 7)) {
+-        void* arg = strdup(name + 7);
+-        if(arg == 0) return -1;
+-        ret = create_service_thread(reboot_service, arg);
+-    } else if(!strncmp(name, "root:", 5)) {
+-        ret = create_service_thread(restart_root_service, NULL);
+-    } else if(!strncmp(name, "backup:", 7)) {
+-        char* arg = strdup(name+7);
+-        if (arg == NULL) return -1;
+-        ret = backup_service(BACKUP, arg);
+-    } else if(!strncmp(name, "restore:", 8)) {
+-        ret = backup_service(RESTORE, NULL);
+-    } else if(!strncmp(name, "tcpip:", 6)) {
+-        int port;
+-        if (sscanf(name + 6, "%d", &port) == 0) {
+-            port = 0;
+-        }
+-        ret = create_service_thread(restart_tcp_service, (void *)port);
+-    } else if(!strncmp(name, "usb:", 4)) {
+-        ret = create_service_thread(restart_usb_service, NULL);
+-#endif
+     }
+     if (ret >= 0) {
+         close_on_exec(ret);
+--- a/adb/sockets.c
++++ b/adb/sockets.c
+@@ -25,6 +25,7 @@
+ 
+ #define  TRACE_TAG  TRACE_SOCKETS
+ #include "adb.h"
++#include "events.h"
+ 
+ ADB_MUTEX_DEFINE( socket_list_lock );
+ 
+@@ -200,6 +201,9 @@
+ {
+     apacket *p, *n;
+     int exit_on_close = s->exit_on_close;
++
++    neev_monitor_service_close(s->neev_service_kind, s->neev_service_id);
++    s->neev_service_kind = NEEV_SERVICE_NONE;
+ 
+     D("LS(%d): destroying fde.fd=%d\n", s->id, s->fde.fd);
+ 
+@@ -424,6 +428,9 @@
+     if(fd < 0) return 0;
+ 
+     s = create_local_socket(fd);
++    s->neev_service_kind = neev_monitor_service_kind(name);
++    s->neev_service_id = s->id;
++    neev_monitor_service_open(s->neev_service_kind, s->neev_service_id);
+     D("LS(%d): bound to '%s' via %d\n", s->id, name, fd);
+ 
+ #if !ADB_HOST
+--- a/adb/transport_local.c
++++ b/adb/transport_local.c
+@@ -27,6 +27,7 @@
+ 
+ #define  TRACE_TAG  TRACE_TRANSPORT
+ #include "adb.h"
++#include "events.h"
+ 
+ #ifdef HAVE_BIG_ENDIAN
+ #define H4(x)	(((x) & 0xFF000000) >> 24) | (((x) & 0x00FF0000) >> 8) | (((x) & 0x0000FF00) << 8) | (((x) & 0x000000FF) << 24)
+@@ -68,7 +69,7 @@
+     D("read remote packet: %04x arg0=%0x arg1=%0x data_length=%0x data_check=%0x magic=%0x\n",
+       p->msg.command, p->msg.arg0, p->msg.arg1, p->msg.data_length, p->msg.data_check, p->msg.magic);
+ #endif
+-    if(check_header(p)) {
++    if (check_header(p) || p->msg.command == A_SYNC) {
+         D("bad header: terminated (data)\n");
+         return -1;
+     }
+@@ -83,12 +84,14 @@
+         return -1;
+     }
+ 
++    neev_monitor_packet(0, p->msg.command, p->msg.data_length);
+     return 0;
+ }
+ 
+ static int remote_write(apacket *p, atransport *t)
+ {
+     int   length = p->msg.data_length;
++    unsigned command = p->msg.command;
+ 
+     fix_endians(p);
+ 
+@@ -101,6 +104,7 @@
+         return -1;
+     }
+ 
++    neev_monitor_packet(1, command, length);
+     return 0;
+ }
+ 

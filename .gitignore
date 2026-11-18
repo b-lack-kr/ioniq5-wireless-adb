@@ -1,0 +1,9 @@
+build/
+*.apk
+*.keystore
+*.jks
+*.pub
+installation.id
+hotspot.conf
+*.log
+.DS_Store

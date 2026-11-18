@@ -1,0 +1,71 @@
+NEEV ADB native monitor, version 1 (installed package 1.0.2)
+
+No network or service payload, command argument, path, address, key, token or
+signature is written by this monitor. Authentication remains the existing
+single pinned RSA key, shell UID 2000, one host transport, AP-only listener.
+The monitor does not introduce a service or change the service allowlist.
+
+The root worker opens three DISTINCT regular files mode 0600, link count 1,
+owned by root, without O_APPEND, and passes writable FDs 7/8/9 only to its
+daemon child. Before dropping privileges the daemon validates those FDs and
+sets FD_CLOEXEC. Rejected/unwritable sinks are closed independently. No monitor
+failure prevents valid ADB operation. No monitor path is opened by the daemon.
+If the periodic thread cannot start, FD7/FD8 are closed; FD9 authentication
+transitions remain operational, and telemetry must be reported unavailable.
+The worker must validate daemon identity and each /proc/PID/fd/N target before
+trusting a snapshot. Dead/replaced daemon files are not evidence of connection.
+An unexpected closed FD must not be reopened by number by the monitor.
+
+FD9 client.state is exactly 0\n or 1\n. Initialization replaces stale contents
+with 0 before listening. 1 is emitted only by adb_auth_verified after successful
+challenge verification. A registered AOSP transport disconnect callback emits
+0 on offline/removal and unregisters itself, preventing duplicate callbacks.
+Re-authentication via a new CNXN clears state before another challenge.
+This is authenticated ADB transport status, not radio reachability; a lost WiFi
+link may remain authenticated until the TCP/ADB transport detects its loss.
+
+FD8 traffic.state is one newline-terminated ASCII line, replaced at startup,
+listener start, every auth/disconnect transition, and every one second:
+V1 uptime_ms snapshot_seq auth rx_packets rx_payload_bytes tx_packets tx_payload_bytes shell_active sync_active event_seq
+All fields after V1 are unsigned decimal; auth is 0 or 1. Uptime uses
+CLOCK_MONOTONIC milliseconds (suspend time can be excluded). Counts are since
+this daemon start. RX is client -> vehicle; TX is vehicle -> client. Payload
+bytes exclude the 24-byte ADB header. RX counts only complete checksum-valid
+packets; TX counts only complete successful writes. TCP/IP overhead, partial
+packets and rejected malformed packets are excluded. shell_active includes
+interactive shell and command shell services. sync_active counts sync channels.
+The snapshot may be transiently incomplete during replacement; a reader must
+require the exact field count and complete final newline and retry/omit invalid
+snapshots. A snapshot is not used to override FD9 authentication evidence.
+
+FD7 events.log is newline-delimited ASCII with fixed event names:
+E1 event_seq uptime_ms EVENT value1 value2
+Sequence numbers increase across rollover within the daemon lifetime. At most
+128 KiB is retained: the daemon truncates the SAME preopened inode on rollover
+and emits ROLLOVER. Startup truncates the previous session. No rename/path access
+is used. Readers may see a partial final line or rollover; ignore invalid rows.
+
+LISTENING, AUTHENTICATED, DISCONNECTED, ROLLOVER: values 0 0.
+AUTH_REJECTED: failed challenged signature count since last flush, 0.
+SHELL_OPEN/CLOSE, EXEC_OPEN/CLOSE, SYNC_OPEN/CLOSE: local numeric channel ID, 0.
+EXEC means a nonempty existing shell: service; exec: is NOT enabled. OPEN means
+the service socket was created, not proof that a command succeeded. CLOSE means
+the local service socket was destroyed, not an exit status. No sync path or
+shell text is retained. Unknown service names are never copied into output.
+RX_CNXN, RX_AUTH, RX_OPEN, RX_OKAY, RX_CLSE, RX_WRTE, RX_OTHER and corresponding
+TX_ names: packet count, payload byte count since the preceding one-second
+flush. Other command values are grouped without printing client-supplied data.
+EVENTS_DROPPED: event count suppressed by the per-second event budget, 0.
+
+Packet accounting updates only memory; no per-packet file write occurs.
+Auth rejection and packet summaries flush once per second (at most 15 rows).
+Auth/service transition log records share a budget of 32 per flush interval;
+state/counters still update when event records are suppressed. The next flush
+reports suppression. Snapshot sequence increases on every snapshot attempt.
+Event sequence increases on attempted record writes to a valid event sink.
+
+Build reproducibly with native/build.sh HMG-API-1.0.1-directory NDK-r25c-directory
+source/package/runtime/neev-adbd. The script copies AOSP sources to a temporary
+tree and applies only this version's session.patch. Host tests compile the real
+monitor/client modules and patched AOSP packet/auth/disconnect functions with
+explicit transport/crypto I/O stubs; they are not a device integration test.
